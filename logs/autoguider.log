@@ -109,3 +109,14 @@
 2026-08-19 09:16:57,555 INFO    Guide star released
 2026-08-19 09:16:59,959 INFO    Camera closed
 2026-08-19 09:17:03,663 INFO    Application stopped
+2026-08-19 10:23:29,243 INFO    Application starting
+2026-08-19 10:23:30,067 INFO    AutoStar connected
+2026-08-19 10:24:21,694 INFO    Manual Slew start: e speed=FIND
+2026-08-19 10:24:24,949 INFO    Manual Slew start: w speed=FIND
+2026-08-19 10:24:27,999 INFO    Manual Slew start: s speed=FIND
+2026-08-19 10:24:30,866 INFO    Manual Slew start: n speed=FIND
+2026-08-19 10:24:45,313 INFO    Camera opened
+2026-08-19 10:24:53,102 INFO    Guide star locked: index=1 x=102.00 y=268.27 flux=576
+2026-08-19 10:25:10,741 INFO    Guide star released
+2026-08-19 10:25:11,944 INFO    Camera closed
+2026-08-19 10:25:15,552 INFO    Application stopped
