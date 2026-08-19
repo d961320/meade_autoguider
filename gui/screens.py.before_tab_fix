@@ -1,0 +1,566 @@
+import time
+
+from camera.camera import Camera
+from camera.startracker import StarTracker
+from gui.manual_slew_screen import ManualSlewScreen
+from config import (
+    DEFAULT_PULSE_MS,
+    MAX_PULSE_MS,
+    MIN_PULSE_MS,
+    PULSE_STEP_MS,
+)
+from gui.menu import Menu
+
+
+class Screens:
+    def __init__(self, display, touch, keyboard, mount, logger):
+        self.display = display
+        self.touch = touch
+        self.keyboard = keyboard
+        self.mount = mount
+        self.logger = logger
+        self.menu = Menu(display, touch, keyboard)
+
+    def run(self):
+        while True:
+            action = self.menu.run(
+                [
+                    {
+                        "label": "MOUNT",
+                        "value": "Forbundet" if self.mount.connected else "Offline",
+                        "enabled": True,
+                        "action": "mount",
+                    },
+                    {
+                        "label": "CAMERA",
+                        "value": "Preview + stjerner",
+                        "enabled": True,
+                        "action": "camera",
+                    },
+                    {
+                        "label": "SERVICE",
+                        "value": "",
+                        "enabled": True,
+                        "action": "service",
+                    },
+                    {
+                        "label": "AFSLUT",
+                        "value": "",
+                        "enabled": True,
+                        "action": "shutdown",
+                    },
+                ],
+                allow_back=False,
+            )
+
+            if action == "mount":
+                self.mount_menu()
+
+            elif action == "camera":
+                self.camera_preview()
+
+            elif action == "service":
+                self.service_menu()
+
+            elif action == "shutdown":
+                return
+
+    def mount_menu(self):
+        while True:
+            action = self.menu.run(
+                [
+                    {
+                        "label": "MOUNT STATUS",
+                        "value": (
+                            "OK"
+                            if self.mount.connected
+                            else "OFFLINE"
+                        ),
+                        "enabled": True,
+                        "action": "status",
+                    },
+                    {
+                        "label": "MOUNT TEST",
+                        "value": "",
+                        "enabled": True,
+                        "action": "test",
+                    },
+                    {
+                        "label": "MANUAL SLEW",
+                        "value": "FIND / MAX",
+                        "enabled": True,
+                        "action": "manual_slew",
+                    },
+                    {
+                        "label": "GENFORBIND",
+                        "value": "",
+                        "enabled": True,
+                        "action": "reconnect",
+                    },
+                    {
+                        "label": "TILBAGE",
+                        "value": "",
+                        "enabled": True,
+                        "action": "back",
+                    },
+                ]
+            )
+
+            if action in {None, "back"}:
+                return
+
+            if action == "status":
+                status = self.mount.status()
+
+                self.display.info_screen(
+                    "Mount Status",
+                    [
+                        (
+                            "Status",
+                            (
+                                "Forbundet"
+                                if status["connected"]
+                                else "Offline"
+                            ),
+                        ),
+                        (
+                            "Port",
+                            status["port"] or "-",
+                        ),
+                        (
+                            "Produkt",
+                            status["product"] or "-",
+                        ),
+                        (
+                            "Firmware",
+                            status["firmware"] or "-",
+                        ),
+                        (
+                            "RA",
+                            status["ra"] or "-",
+                        ),
+                        (
+                            "DEC",
+                            (
+                                status["dec"] or "-"
+                            ).replace("ß", "°"),
+                        ),
+                    ],
+                )
+
+                self.wait_for_back()
+
+            elif action == "test":
+                self.mount_test()
+
+            elif action == "manual_slew":
+                screen = ManualSlewScreen(
+                    display=self.display,
+                    touch=self.touch,
+                    keyboard=self.keyboard,
+                    mount_controller=self.mount,
+                    logger=self.logger,
+                )
+
+                screen.run()
+
+            elif action == "reconnect":
+                self.mount.disconnect()
+                self.display.splash(
+                    "Søger AutoStar..."
+                )
+                self.mount.connect()
+                time.sleep(1)    
+
+    def mount_test(self):
+        pulse = DEFAULT_PULSE_MS
+        message = "Klar"
+
+        while True:
+            self.display.mount_test_screen(
+                self.mount.connected,
+                pulse,
+                message,
+            )
+
+            action = self.keyboard.read()
+
+            touched = self.touch.read_release()
+
+            if touched is not None:
+                x, y = touched
+
+                if 175 <= x <= 305 and 65 <= y <= 108:
+                    action = "n"
+                elif 35 <= x <= 155 and 118 <= y <= 161:
+                    action = "w"
+                elif 180 <= x <= 300 and 118 <= y <= 161:
+                    action = "x"
+                elif 325 <= x <= 445 and 118 <= y <= 161:
+                    action = "e"
+                elif 175 <= x <= 305 and 171 <= y <= 214:
+                    action = "s"
+                elif 25 <= x <= 145 and 225 <= y <= 266:
+                    action = "-"
+                elif 335 <= x <= 455 and 225 <= y <= 266:
+                    action = "+"
+                elif 170 <= x <= 310 and 272 <= y <= 319:
+                    action = "q"
+
+            if action in {"q", "\x1b"}:
+                self.mount.safe_stop()
+                return
+
+            if action == "x":
+                self.mount.safe_stop()
+                message = "STOP sendt"
+
+            elif action == "+":
+                pulse = min(MAX_PULSE_MS, pulse + PULSE_STEP_MS)
+                message = f"Puls {pulse} ms"
+
+            elif action == "-":
+                pulse = max(MIN_PULSE_MS, pulse - PULSE_STEP_MS)
+                message = f"Puls {pulse} ms"
+
+            elif action in {"n", "s", "e", "w"}:
+                try:
+                    names = {
+                        "n": "NORD",
+                        "s": "SYD",
+                        "e": "OEST",
+                        "w": "VEST",
+                    }
+
+                    functions = {
+                        "n": self.mount.pulse_north,
+                        "s": self.mount.pulse_south,
+                        "e": self.mount.pulse_east,
+                        "w": self.mount.pulse_west,
+                    }
+
+                    message = f"{names[action]} {pulse} ms"
+                    self.display.mount_test_screen(
+                        self.mount.connected,
+                        pulse,
+                        message,
+                    )
+
+                    functions[action](pulse)
+                    message = "Puls afsluttet"
+
+                except Exception as error:
+                    self.logger.exception("Mount pulse failed")
+                    self.mount.safe_stop()
+                    message = f"Fejl: {error}"
+
+            time.sleep(0.02)
+
+    def camera_preview(self):
+        camera = Camera()
+        tracker = StarTracker()
+
+	selected_index = 0
+	locked = False
+
+	reference_x = None
+	reference_y = None
+
+        last_time = time.monotonic()
+        fps = 0.0
+
+        # Samme preview-geometri som Display.camera_screen().
+        preview_width = 370
+
+        try:
+            camera.open()
+            self.logger.info("Camera opened")
+
+            while True:
+                frame = camera.read()
+
+                if frame is None:
+                    continue
+
+                now = time.monotonic()
+                delta = now - last_time
+
+                if delta > 0:
+                    fps = 1.0 / delta
+
+                last_time = now
+
+                stars = tracker.find_stars(frame)
+
+                if locked and stars:
+                    selected_index = min(
+                        selected_index,
+                        len(stars) - 1,
+                    )
+
+                    current_star = stars[selected_index]
+
+		    current_star = stars[selected_index]
+
+		    if locked and reference_x is not None:
+
+		    dx = current_star["x"] - reference_x
+		    dy = current_star["y"] - reference_y
+
+		    print(
+		        f"\rdx={dx:+6.2f}px   dy={dy:+6.2f}px",
+		        end="",
+		        flush=True,
+		    )
+
+                if stars:
+                    selected_index = min(
+                        selected_index,
+                        len(stars) - 1,
+                    )
+                else:
+                    selected_index = 0
+                    locked = False
+
+                self.display.camera_screen(
+                    frame,
+                    fps,
+                    stars,
+                    selected_index,
+                    locked,
+                )
+
+                action = self.keyboard.read()
+                touched = self.touch.read_release()
+
+                if touched is not None:
+                    touch_x, touch_y = touched
+
+                    # Knapper i højre side.
+                    if (
+                        375 <= touch_x <= 474
+                        and 10 <= touch_y <= 65
+                    ):
+                        action = "n"
+
+                    elif (
+                        375 <= touch_x <= 474
+                        and 75 <= touch_y <= 130
+                    ):
+                        action = "v"
+
+                    elif (
+                        375 <= touch_x <= 474
+                        and 140 <= touch_y <= 195
+                    ):
+                        action = "r"
+
+                    elif (
+                        375 <= touch_x <= 474
+                        and 260 <= touch_y <= 315
+                    ):
+                        action = "q"
+
+                    # Direkte valg på kamerabilledet.
+                    elif (
+                        0 <= touch_x < preview_width
+                        and stars
+                    ):
+                        scale = min(
+                            preview_width / frame.shape[1],
+                            self.display.height
+                            / frame.shape[0],
+                        )
+
+                        scaled_width = int(
+                            frame.shape[1] * scale
+                        )
+                        scaled_height = int(
+                            frame.shape[0] * scale
+                        )
+
+                        preview_x = (
+                            preview_width - scaled_width
+                        ) // 2
+
+                        preview_y = (
+                            self.display.height
+                            - scaled_height
+                        ) // 2
+
+                        inside_preview = (
+                            preview_x
+                            <= touch_x
+                            < preview_x + scaled_width
+                            and preview_y
+                            <= touch_y
+                            < preview_y + scaled_height
+                        )
+
+                        if inside_preview:
+                            # Find den stjerne, der ligger nærmest
+                            # touch-positionen på LCD-previewet.
+                            nearest_index = None
+                            nearest_distance_squared = None
+
+                            for index, star in enumerate(stars):
+                                star_screen_x = (
+                                    preview_x
+                                    + star["x"] * scale
+                                )
+
+                                star_screen_y = (
+                                    preview_y
+                                    + star["y"] * scale
+                                )
+
+                                dx = (
+                                    star_screen_x
+                                    - touch_x
+                                )
+
+                                dy = (
+                                    star_screen_y
+                                    - touch_y
+                                )
+
+                                distance_squared = (
+                                    dx * dx
+                                    + dy * dy
+                                )
+
+                                if (
+                                    nearest_distance_squared
+                                    is None
+                                    or distance_squared
+                                    < nearest_distance_squared
+                                ):
+                                    nearest_distance_squared = (
+                                        distance_squared
+                                    )
+                                    nearest_index = index
+
+                            # Kræv, at trykket ligger højst cirka
+                            # 30 skærmpixels fra en funden stjerne.
+                            maximum_distance = 30
+
+                            if (
+                                nearest_index is not None
+                                and nearest_distance_squared
+                                <= maximum_distance ** 2
+                            ):
+                                selected_index = nearest_index
+                                locked = True
+
+                                selected_star = stars[
+                                    selected_index
+                                ]
+
+                                self.logger.info(
+                                    "Guide star selected: "
+                                    f"index={selected_index} "
+                                    f"x={selected_star['x']:.2f} "
+                                    f"y={selected_star['y']:.2f} "
+                                    f"flux={selected_star['flux']:.0f}"
+                                )
+
+                if action in {"q", "\x1b"}:
+                    return
+
+                # Næste stjerne.
+                if (
+                    action == "n"
+                    and stars
+                    and not locked
+                ):
+                    selected_index = (
+                        selected_index + 1
+                    ) % len(stars)
+
+                # Lås den markerede stjerne.
+		elif action == "v" and stars:
+    		locked = True
+
+		    reference_x = stars[selected_index]["x"]
+		    reference_y = stars[selected_index]["y"]
+
+		    print()
+		    print("Guide star locked")
+		    print(f"Reference X = {reference_x:.2f}")
+		    print(f"Reference Y = {reference_y:.2f}")
+
+                    self.logger.info(
+                        "Guide star locked: "
+                        f"index={selected_index} "
+                        f"x={selected_star['x']:.2f} "
+                        f"y={selected_star['y']:.2f} "
+                        f"flux={selected_star['flux']:.0f}"
+                    )
+
+                # Frigiv den valgte stjerne.
+                elif action == "r":
+                    locked = False
+
+                    self.logger.info(
+                        "Guide star released"
+                    )
+
+        finally:
+            camera.close()
+            self.logger.info("Camera closed")
+
+    def service_menu(self):
+        while True:
+            action = self.menu.run(
+                [
+                    {
+                        "label": "SYSTEMSTATUS",
+                        "value": "",
+                        "enabled": True,
+                        "action": "status",
+                    },
+                    {
+                        "label": "DISPLAY TEST",
+                        "value": "",
+                        "enabled": True,
+                        "action": "display",
+                    },
+                    {
+                        "label": "TILBAGE",
+                        "value": "",
+                        "enabled": True,
+                        "action": "back",
+                    },
+                ]
+            )
+
+            if action in {None, "back"}:
+                return
+
+            if action == "status":
+                self.display.info_screen(
+                    "Systemstatus",
+                    [
+                        ("Display", "OK"),
+                        ("Touch", "OK"),
+                        ("AutoStar", "OK" if self.mount.connected else "OFFLINE"),
+                        ("Kamera", "/dev/video0"),
+                    ],
+                )
+                self.wait_for_back()
+
+            elif action == "display":
+                self.display.splash("Display fungerer")
+                time.sleep(1.5)
+
+    def wait_for_back(self):
+        while True:
+            key = self.keyboard.read()
+
+            if key in {"v", "q", "\r", "\n", "\x1b"}:
+                return
+
+            if self.touch.read_release() is not None:
+                return
+
+            time.sleep(0.02)
