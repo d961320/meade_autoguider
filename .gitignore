@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.log
 logs/
+*.log
 backup/
 *.before_*
 *.bak
