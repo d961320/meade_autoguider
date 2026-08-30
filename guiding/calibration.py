@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 
 """
-Trinvis mount-kalibrering.
+Fire-retningers mount-kalibrering.
 
-Kalibreringen sender guidepulser via MountController og
-bruger positioner fra GuideTracker til at måle bevægelsen.
+Sekvens:
 
-Kamera- og GUI-loopet ligger ikke i denne klasse.
-Efter hver puls skal den kaldende kode opdatere GuideTracker
-med nye kamerabilleder og derefter kalde record_measurement().
+    ØST  -> mål RA+
+    VEST -> mål RA-
+    NORD -> mål DEC+
+    SYD  -> mål DEC-
+
+Kamera- og GUI-loopet ligger uden for denne klasse.
+
+Efter hver puls skal den kaldende kode:
+
+1. hente nye kamerabilleder,
+2. opdatere GuideTracker,
+3. kalde den tilhørende record-metode.
 """
 
 from __future__ import annotations
@@ -20,18 +28,21 @@ from guiding.calibration_result import CalibrationResult
 
 class CalibrationState(Enum):
     IDLE = "idle"
-    READY = "ready"
-
-    WAITING_RA = "waiting_ra"
-    WAITING_DEC = "waiting_dec"
-
+    READY_RA_EAST = "ready_ra_east"
+    WAITING_RA_EAST = "waiting_ra_east"
+    READY_RA_WEST = "ready_ra_west"
+    WAITING_RA_WEST = "waiting_ra_west"
+    READY_DEC_NORTH = "ready_dec_north"
+    WAITING_DEC_NORTH = "waiting_dec_north"
+    READY_DEC_SOUTH = "ready_dec_south"
+    WAITING_DEC_SOUTH = "waiting_dec_south"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
 
 class Calibration:
-    """Styrer en enkel RA- og DEC-kalibrering."""
+    """Styrer en fire-retningers RA/DEC-kalibrering."""
 
     def __init__(
         self,
@@ -39,6 +50,7 @@ class Calibration:
         tracker,
         pulse_ms=1000,
         minimum_movement_pixels=2.0,
+        speed_mode="CENTER",
     ):
         self.mount = mount
         self.tracker = tracker
@@ -47,17 +59,31 @@ class Calibration:
         self.minimum_movement_pixels = float(
             minimum_movement_pixels
         )
+        self.speed_mode = str(
+            speed_mode
+        ).strip().upper()
 
         self.state = CalibrationState.IDLE
         self.result = CalibrationResult()
         self.message = "Ikke startet"
 
+        self.ra_east_dx = 0.0
+        self.ra_east_dy = 0.0
+        self.ra_west_dx = 0.0
+        self.ra_west_dy = 0.0
+
+        self.dec_north_dx = 0.0
+        self.dec_north_dy = 0.0
+        self.dec_south_dx = 0.0
+        self.dec_south_dy = 0.0
+
     @property
     def active(self):
-        return self.state in {
-            CalibrationState.READY,
-            CalibrationState.WAITING_RA,
-            CalibrationState.WAITING_DEC,
+        return self.state not in {
+            CalibrationState.IDLE,
+            CalibrationState.COMPLETED,
+            CalibrationState.FAILED,
+            CalibrationState.CANCELLED,
         }
 
     @property
@@ -69,36 +95,20 @@ class Calibration:
         return self.state == CalibrationState.FAILED
 
     def start(self):
-        """
-        Start en ny kalibrering.
-
-        GuideTracker skal allerede have en låst stjerne.
-        """
+        """Start en ny kalibrering."""
 
         self.result.reset()
+        self._reset_measurements()
 
         if not self.mount.connected:
             return self._fail(
                 "Mountet er ikke forbundet"
             )
 
-        if not self.tracker.locked:
-            return self._fail(
-                "Ingen guide-stjerne er låst"
-            )
-
-        if self.tracker.lost:
-            return self._fail(
-                "Guide-stjernen er mistet"
-            )
-
-        if (
-            self.tracker.current_x is None
-            or self.tracker.current_y is None
-        ):
-            return self._fail(
-                "Guide-stjernen har ingen position"
-            )
+        try:
+            self._require_valid_tracker()
+        except RuntimeError as error:
+            return self._fail(str(error))
 
         if not 100 <= self.pulse_ms <= 5000:
             return self._fail(
@@ -114,121 +124,180 @@ class Calibration:
 
         self.tracker.reset_reference()
 
-        self.state = CalibrationState.READY
-        self.message = "Klar til RA-måling"
+        self.state = CalibrationState.READY_RA_EAST
+        self.message = "Klar til RA øst"
 
         return True
 
-    def pulse_ra(self):
-        """
-        Send en puls mod øst.
-
-        Efter pulsen skal kameraet levere nye frames,
-        GuideTracker skal opdateres, og derefter skal
-        record_ra_measurement() kaldes.
-        """
-
+    def pulse_ra_east(self):
         self._require_state(
-            CalibrationState.READY
+            CalibrationState.READY_RA_EAST
         )
 
         self.mount.pulse_east(
             self.pulse_ms,
-            speed_mode="CENTER",
+            speed_mode=self.speed_mode,
         )
 
-        self.state = CalibrationState.WAITING_RA
-        self.message = "Venter på RA-måling"
+        self.state = CalibrationState.WAITING_RA_EAST
+        self.message = "Venter på RA øst-måling"
 
-    def record_ra_measurement(self):
-        """Gem RA-bevægelsen fra GuideTracker."""
-
+    def record_ra_east(self):
         self._require_state(
-            CalibrationState.WAITING_RA
+            CalibrationState.WAITING_RA_EAST
         )
-        self._require_valid_tracker()
 
-        dx = float(self.tracker.dx)
-        dy = float(self.tracker.dy)
+        dx, dy = self._read_movement("RA øst")
 
-        distance = (
-            dx * dx
-            + dy * dy
-        ) ** 0.5
+        if dx is None:
+            return False
 
-        if distance < self.minimum_movement_pixels:
-            return self._fail(
-                "RA-bevægelsen var for lille: "
-                f"{distance:.2f} px"
-            )
-
-        self.result.ra_dx = dx
-        self.result.ra_dy = dy
-        self.result.ra_pulse_ms = self.pulse_ms
+        self.ra_east_dx = dx
+        self.ra_east_dy = dy
 
         self.tracker.reset_reference()
 
-        self.state = CalibrationState.WAITING_DEC
-        self.message = "RA målt - klar til DEC-puls"
+        self.state = CalibrationState.READY_RA_WEST
+        self.message = "RA øst målt - klar til RA vest"
 
         return True
 
-    def pulse_dec(self):
-        """
-        Send en puls mod nord.
-
-        Funktionen kaldes efter en vellykket RA-måling.
-        """
-
+    def pulse_ra_west(self):
         self._require_state(
-            CalibrationState.WAITING_DEC
+            CalibrationState.READY_RA_WEST
         )
 
-        # WAITING_DEC bruges både før og efter DEC-pulsen.
-        # Vi markerer fasen via beskeden.
-        if self.message != "RA målt - klar til DEC-puls":
-            raise RuntimeError(
-                "DEC-pulsen er allerede sendt"
+        self.mount.pulse_west(
+            self.pulse_ms,
+            speed_mode=self.speed_mode,
+        )
+
+        self.state = CalibrationState.WAITING_RA_WEST
+        self.message = "Venter på RA vest-måling"
+
+    def record_ra_west(self):
+        self._require_state(
+            CalibrationState.WAITING_RA_WEST
+        )
+
+        dx, dy = self._read_movement("RA vest")
+
+        if dx is None:
+            return False
+
+        self.ra_west_dx = dx
+        self.ra_west_dy = dy
+
+        # Positiv RA-vektor beskriver østretningen.
+        self.result.ra_dx = (
+            self.ra_east_dx
+            - self.ra_west_dx
+        ) / 2.0
+
+        self.result.ra_dy = (
+            self.ra_east_dy
+            - self.ra_west_dy
+        ) / 2.0
+
+        self.result.ra_pulse_ms = self.pulse_ms
+
+        if (
+            self.result.ra_distance_pixels
+            < self.minimum_movement_pixels
+        ):
+            return self._fail(
+                "Samlet RA-bevægelse var for lille: "
+                f"{self.result.ra_distance_pixels:.2f} px"
             )
+
+        self.tracker.reset_reference()
+
+        self.state = CalibrationState.READY_DEC_NORTH
+        self.message = "RA målt - klar til DEC nord"
+
+        return True
+
+    def pulse_dec_north(self):
+        self._require_state(
+            CalibrationState.READY_DEC_NORTH
+        )
 
         self.mount.pulse_north(
             self.pulse_ms,
-            speed_mode="CENTER",
+            speed_mode=self.speed_mode,
         )
 
-        self.message = "Venter på DEC-måling"
+        self.state = CalibrationState.WAITING_DEC_NORTH
+        self.message = "Venter på DEC nord-måling"
 
-    def record_dec_measurement(self):
-        """Gem DEC-bevægelsen og afslut kalibreringen."""
-
+    def record_dec_north(self):
         self._require_state(
-            CalibrationState.WAITING_DEC
+            CalibrationState.WAITING_DEC_NORTH
         )
 
-        if self.message != "Venter på DEC-måling":
-            raise RuntimeError(
-                "DEC-pulsen er ikke sendt endnu"
-            )
+        dx, dy = self._read_movement("DEC nord")
 
-        self._require_valid_tracker()
+        if dx is None:
+            return False
 
-        dx = float(self.tracker.dx)
-        dy = float(self.tracker.dy)
+        self.dec_north_dx = dx
+        self.dec_north_dy = dy
 
-        distance = (
-            dx * dx
-            + dy * dy
-        ) ** 0.5
+        self.tracker.reset_reference()
 
-        if distance < self.minimum_movement_pixels:
-            return self._fail(
-                "DEC-bevægelsen var for lille: "
-                f"{distance:.2f} px"
-            )
+        self.state = CalibrationState.READY_DEC_SOUTH
+        self.message = "DEC nord målt - klar til DEC syd"
 
-        self.result.dec_dx = dx
-        self.result.dec_dy = dy
+        return True
+
+    def pulse_dec_south(self):
+        self._require_state(
+            CalibrationState.READY_DEC_SOUTH
+        )
+
+        self.mount.pulse_south(
+            self.pulse_ms,
+            speed_mode=self.speed_mode,
+        )
+
+        self.state = CalibrationState.WAITING_DEC_SOUTH
+        self.message = "Venter på DEC syd-måling"
+
+    def record_dec_south(self):
+        self._require_state(
+            CalibrationState.WAITING_DEC_SOUTH
+        )
+
+        dx, dy = self._read_movement("DEC syd")
+
+        if dx is None:
+            return False
+
+        self.dec_south_dx = dx
+        self.dec_south_dy = dy
+
+        # Positiv DEC-vektor beskriver nordretningen.
+        self.result.dec_dx = (
+            self.dec_north_dx
+            - self.dec_south_dx
+        ) / 2.0
+
+        self.result.dec_dy = (
+            self.dec_north_dy
+            - self.dec_south_dy
+        ) / 2.0
+
         self.result.dec_pulse_ms = self.pulse_ms
+
+        if (
+            self.result.dec_distance_pixels
+            < self.minimum_movement_pixels
+        ):
+            return self._fail(
+                "Samlet DEC-bevægelse var for lille: "
+                f"{self.result.dec_distance_pixels:.2f} px"
+            )
+
         self.result.completed = True
         self.result.error = None
 
@@ -238,9 +307,12 @@ class Calibration:
         return True
 
     def cancel(self):
-        """Annuller og stop mountet sikkert."""
+        """Annuller kalibreringen og stop mountet."""
 
         self.mount.safe_stop()
+
+        self.result.completed = False
+        self.result.error = "Kalibrering annulleret"
 
         self.state = CalibrationState.CANCELLED
         self.message = "Kalibrering annulleret"
@@ -250,13 +322,12 @@ class Calibration:
 
         self.mount.safe_stop()
         self.result.reset()
+        self._reset_measurements()
 
         self.state = CalibrationState.IDLE
         self.message = "Ikke startet"
 
     def status(self):
-        """Returnér aktuel status som dictionary."""
-
         return {
             "state": self.state.value,
             "message": self.message,
@@ -264,8 +335,47 @@ class Calibration:
             "completed": self.completed,
             "failed": self.failed,
             "pulse_ms": self.pulse_ms,
+            "speed_mode": self.speed_mode,
+            "measurements": {
+                "ra_east": {
+                    "dx": self.ra_east_dx,
+                    "dy": self.ra_east_dy,
+                },
+                "ra_west": {
+                    "dx": self.ra_west_dx,
+                    "dy": self.ra_west_dy,
+                },
+                "dec_north": {
+                    "dx": self.dec_north_dx,
+                    "dy": self.dec_north_dy,
+                },
+                "dec_south": {
+                    "dx": self.dec_south_dx,
+                    "dy": self.dec_south_dy,
+                },
+            },
             "result": self.result.as_dict(),
         }
+
+    def _read_movement(self, label):
+        self._require_valid_tracker()
+
+        dx = float(self.tracker.dx)
+        dy = float(self.tracker.dy)
+
+        distance = (
+            dx * dx
+            + dy * dy
+        ) ** 0.5
+
+        if distance < self.minimum_movement_pixels:
+            self._fail(
+                f"{label}-bevægelsen var for lille: "
+                f"{distance:.2f} px"
+            )
+            return None, None
+
+        return dx, dy
 
     def _require_valid_tracker(self):
         if not self.tracker.locked:
@@ -293,6 +403,17 @@ class Calibration:
                 f"{self.state.value}; "
                 f"forventede {expected_state.value}"
             )
+
+    def _reset_measurements(self):
+        self.ra_east_dx = 0.0
+        self.ra_east_dy = 0.0
+        self.ra_west_dx = 0.0
+        self.ra_west_dy = 0.0
+
+        self.dec_north_dx = 0.0
+        self.dec_north_dy = 0.0
+        self.dec_south_dx = 0.0
+        self.dec_south_dy = 0.0
 
     def _fail(self, message):
         self.mount.safe_stop()

@@ -6,7 +6,19 @@ from guiding.tracker import GuideTracker
 
 
 class FakeMount:
-    connected = True
+    def __init__(self):
+        self.connected = True
+        self.commands = []
+
+    def pulse_east(self, milliseconds):
+        self.commands.append(
+            ("east", milliseconds)
+        )
+
+    def pulse_west(self, milliseconds):
+        self.commands.append(
+            ("west", milliseconds)
+        )
 
 
 tracker = GuideTracker()
@@ -14,6 +26,7 @@ tracker = GuideTracker()
 guide_loop = GuideLoop(
     tracker=tracker,
     mount=FakeMount(),
+    pulse_cooldown_seconds=0.0,
 )
 
 controller = GuideController(
