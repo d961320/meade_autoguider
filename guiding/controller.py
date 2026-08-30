@@ -16,6 +16,8 @@ relevante guiding-moduler.
 
 from enum import Enum, auto
 
+from guiding.calibration import CalibrationState
+
 
 class GuideState(Enum):
     IDLE = auto()
@@ -119,6 +121,106 @@ class GuideController:
         self.state = GuideState.CALIBRATING
         self.last_error = None
         return True
+
+    def advance_calibration(self):
+        """
+        Udfør præcis ét kalibreringstrin.
+
+        READY-tilstande sender en puls.
+        WAITING-tilstande gemmer den målte bevægelse.
+
+        GuideTracker skal være opdateret med nye billeder,
+        før metoden kaldes i en WAITING-tilstand.
+        """
+
+        if self.calibration is None:
+            raise RuntimeError(
+                "Calibration er ikke tilknyttet"
+            )
+
+        if self.state != GuideState.CALIBRATING:
+            raise RuntimeError(
+                "Kalibrering er ikke aktiv"
+            )
+
+        calibration_state = self.calibration.state
+
+        actions = {
+            CalibrationState.READY_RA_EAST: (
+                self.calibration.pulse_ra_east,
+                "RA øst-puls sendt",
+            ),
+            CalibrationState.WAITING_RA_EAST: (
+                self.calibration.record_ra_east,
+                "RA øst målt",
+            ),
+            CalibrationState.READY_RA_WEST: (
+                self.calibration.pulse_ra_west,
+                "RA vest-puls sendt",
+            ),
+            CalibrationState.WAITING_RA_WEST: (
+                self.calibration.record_ra_west,
+                "RA vest målt",
+            ),
+            CalibrationState.READY_DEC_NORTH: (
+                self.calibration.pulse_dec_north,
+                "DEC nord-puls sendt",
+            ),
+            CalibrationState.WAITING_DEC_NORTH: (
+                self.calibration.record_dec_north,
+                "DEC nord målt",
+            ),
+            CalibrationState.READY_DEC_SOUTH: (
+                self.calibration.pulse_dec_south,
+                "DEC syd-puls sendt",
+            ),
+            CalibrationState.WAITING_DEC_SOUTH: (
+                self.calibration.record_dec_south,
+                "DEC syd målt",
+            ),
+        }
+
+        if calibration_state == CalibrationState.COMPLETED:
+            self.state = GuideState.READY
+            self.last_error = None
+            return True
+
+        if calibration_state == CalibrationState.FAILED:
+            self._set_error(
+                self.calibration.message
+            )
+            return False
+
+        try:
+            action, message = actions[
+                calibration_state
+            ]
+
+            result = action()
+
+            if result is False:
+                self._set_error(
+                    self.calibration.message
+                )
+                return False
+
+            self.last_status = message
+            self.last_error = None
+
+            if self.calibration.completed:
+                self.state = GuideState.READY
+
+            return True
+
+        except KeyError as error:
+            raise RuntimeError(
+                "Ukendt kalibreringstilstand: "
+                f"{calibration_state.value}"
+            ) from error
+
+        except Exception as error:
+            self._set_error(str(error))
+            return False
 
     def finish_calibration(self):
         """
