@@ -23,6 +23,7 @@ class GuideLoop:
         self,
         tracker,
         mount,
+        calibration=None,
         ra_deadband_pixels=2.0,
         ra_pulse_ms=200,
         pulse_cooldown_seconds=0.75,
@@ -32,6 +33,7 @@ class GuideLoop:
     ):
         self.tracker = tracker
         self.mount = mount
+        self.calibration = calibration
 
         self.ra_deadband_pixels = float(
             ra_deadband_pixels
@@ -88,12 +90,12 @@ class GuideLoop:
         if not self._cooldown_finished():
             return self.status
 
-        dx = float(self.tracker.dx)
+        ra_error = self._compute_ra_error()
 
-        if abs(dx) <= self.ra_deadband_pixels:
+        if abs(ra_error) <= self.ra_deadband_pixels:
             return self.status
 
-        if dx > 0:
+        if ra_error > 0:
             direction = self.ra_positive_direction
         else:
             direction = self.ra_negative_direction
@@ -194,6 +196,41 @@ class GuideLoop:
             ) from error
 
         function(milliseconds)
+
+    def _compute_ra_error(self):
+        """
+        Beregn guidefejlen langs den målte RA-vektor.
+
+        Hvis der ikke findes en gyldig kalibrering,
+        bruges tracker.dx som fallback.
+        """
+
+        dx = float(self.tracker.dx)
+        dy = float(self.tracker.dy)
+
+        calibration = self.calibration
+
+        if calibration is None:
+            return dx
+
+        if not calibration.valid:
+            return dx
+
+        ra_dx = float(calibration.ra_dx)
+        ra_dy = float(calibration.ra_dy)
+
+        ra_length = (
+            ra_dx * ra_dx
+            + ra_dy * ra_dy
+        ) ** 0.5
+
+        if ra_length <= 0:
+            return dx
+
+        return (
+            dx * ra_dx
+            + dy * ra_dy
+        ) / ra_length
 
     def _validate_configuration(self):
         if self.ra_deadband_pixels < 0:
