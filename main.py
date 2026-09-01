@@ -1,3 +1,4 @@
+import subprocess
 import time
 
 from gui.display import Display
@@ -17,6 +18,8 @@ def main():
     mount = MountController()
 
     display_open = False
+    requested_action = "exit"
+    exit_code = 0
 
     try:
         display.open()
@@ -34,7 +37,9 @@ def main():
         if mount.connected:
             logger.info("AutoStar connected")
         else:
-            logger.warning("AutoStar not connected")
+            logger.warning(
+                "AutoStar not connected"
+            )
 
         screens = Screens(
             display,
@@ -44,47 +49,115 @@ def main():
             logger,
         )
 
-        screens.run()
-        return 0
+        requested_action = (
+            screens.run()
+            or "exit"
+        )
 
     except KeyboardInterrupt:
         logger.info("Ctrl+C received")
-        return 130
+        exit_code = 130
 
     except Exception as error:
-        logger.exception("Unhandled system error")
-        print("SYSTEMFEJL:", error)
+        logger.exception(
+            "Unhandled system error"
+        )
+
+        print(
+            "SYSTEMFEJL:",
+            error,
+        )
 
         if display_open:
             try:
                 display.info_screen(
                     "SYSTEMFEJL",
                     [
-                        ("Fejl", str(error)[:38]),
+                        (
+                            "Fejl",
+                            str(error)[:38],
+                        ),
                     ],
                     footer="Programmet afsluttes",
                 )
+
                 time.sleep(3)
+
             except Exception:
                 pass
 
-        return 1
+        exit_code = 1
 
     finally:
-        mount.safe_stop()
-        mount.disconnect()
-        keyboard.close()
-        touch.close()
+        try:
+            mount.safe_stop()
+        except Exception:
+            pass
+
+        try:
+            mount.disconnect()
+        except Exception:
+            pass
+
+        try:
+            keyboard.close()
+        except Exception:
+            pass
+
+        try:
+            touch.close()
+        except Exception:
+            pass
 
         if display_open:
             try:
                 display.shutdown()
                 time.sleep(2)
                 display.blank()
+
+            except Exception:
+                pass
+
             finally:
-                display.close()
+                try:
+                    display.close()
+                except Exception:
+                    pass
 
         logger.info("Application stopped")
+
+    if (
+        requested_action == "poweroff"
+        and exit_code == 0
+    ):
+        logger.info(
+            "Raspberry Pi poweroff requested"
+        )
+
+        try:
+            subprocess.run(
+                [
+                    "sudo",
+                    "-n",
+                    "systemctl",
+                    "poweroff",
+                ],
+                check=True,
+            )
+
+        except subprocess.CalledProcessError as error:
+            logger.exception(
+                "Raspberry Pi poweroff failed"
+            )
+
+            print(
+                "Kunne ikke slukke Raspberry Pi:",
+                error,
+            )
+
+            return 1
+
+    return exit_code
 
 
 if __name__ == "__main__":

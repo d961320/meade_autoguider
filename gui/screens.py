@@ -63,7 +63,10 @@ class Screens:
                 self.service_menu()
 
             elif action == "shutdown":
-                return
+                shutdown_action = self.shutdown_menu()
+
+                if shutdown_action is not None:
+                    return shutdown_action
 
     def mount_menu(self):
         while True:
@@ -571,6 +574,73 @@ class Screens:
         finally:
             camera.close()
             self.logger.info("Camera closed")
+
+    def shutdown_menu(self):
+        """
+        Vis menu til afslutning eller sikker nedlukning.
+        """
+
+        while True:
+            action = self.menu.run(
+                [
+                    {
+                        "label": "TILBAGE",
+                        "value": "",
+                        "enabled": True,
+                        "action": "back",
+                    },
+                    {
+                        "label": "AFSLUT PROGRAM",
+                        "value": "",
+                        "enabled": True,
+                        "action": "exit",
+                    },
+                    {
+                        "label": "SLUK RASPBERRY PI",
+                        "value": "",
+                        "enabled": True,
+                        "action": "poweroff",
+                    },
+                ],
+                allow_back=False,
+            )
+
+            if action in {None, "back"}:
+                return None
+
+            if action == "exit":
+                return "exit"
+
+            if (
+                action == "poweroff"
+                and self.confirm_poweroff()
+            ):
+                return "poweroff"
+
+    def confirm_poweroff(self):
+        """
+        Kræv bekræftelse før Raspberry Pi slukkes.
+        """
+
+        action = self.menu.run(
+            [
+                {
+                    "label": "NEJ - TILBAGE",
+                    "value": "",
+                    "enabled": True,
+                    "action": "cancel",
+                },
+                {
+                    "label": "JA - SLUK NU",
+                    "value": "",
+                    "enabled": True,
+                    "action": "confirm",
+                },
+            ],
+            allow_back=False,
+        )
+
+        return action == "confirm"
 
     def service_menu(self):
         while True:
